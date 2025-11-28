@@ -3,7 +3,7 @@
 <package format="3">
   <name>siha_camera_pkg</name>
   <version>0.1.0</version>
-  <description>Savaşan İHA Optimize Kamera Paketi</description>
+  <description>Savaşan İHA Kamera</description>
   <maintainer email="teknofest@siha.com">Savaşan İHA Ekibi</maintainer>
   <license>Apache-2.0</license>
 
