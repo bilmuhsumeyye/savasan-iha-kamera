@@ -4,9 +4,8 @@
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/string.hpp> 
-#include <px4_msgs/msg/sensor_gps.hpp> // GPS Zamanı burada
+#include <px4_msgs/msg/sensor_gps.hpp> 
 #include <algorithm> 
-#include <ctime> // Saat hesaplaması için
 
 using namespace std::chrono_literals;
 
@@ -36,7 +35,6 @@ public:
         subscription_ = this->create_subscription<std_msgs::msg::String>(
             "/state", 10, std::bind(&CameraPublisher::state_callback, this, std::placeholders::_1));
 
-        // GPS verisini (Zaman için) tekrar dinlemeye başladık
         gps_sub_ = this->create_subscription<px4_msgs::msg::SensorGps>(
             "/fmu/out/vehicle_gps_position", 
             px4_qos, 
@@ -51,10 +49,33 @@ public:
             std::chrono::duration<double>(1.0 / fps_),
             std::bind(&CameraPublisher::timer_callback, this));
 
-        RCLCPP_INFO(this->get_logger(), "MOD: GPS SAATİ (UTC) Aktif");
+        // İSTEK: Sadece bu yazsın
+        RCLCPP_INFO(this->get_logger(), "KAMERA BAŞLATILDI...");
     }
 
 private:
+    void gps_callback(const px4_msgs::msg::SensorGps::SharedPtr msg)
+    {
+        uint64_t time_usec = msg->time_utc_usec;
+        
+        if (time_usec == 0) {
+            time_usec = msg->timestamp; 
+        }
+
+        uint64_t total_seconds = time_usec / 1000000;
+        hours_ = ((total_seconds / 3600) + 3) % 24;
+        minutes_ = (total_seconds / 60) % 60;
+        seconds_ = total_seconds % 60;
+        millis_ = (time_usec % 1000000) / 1000;
+
+        data_received_ = true;
+    }
+
+    void state_callback(const std_msgs::msg::String::SharedPtr msg)
+    {
+        bool is_kamikaze = (msg->data == "KAMIKAZE" || msg->data == "kamikaze");
+        if (is_kamikaze) kamikaze_mode_ = true;
+        else if (!is_kamikaze && kamikaze_mode_) kamikaze_mode_ = false;
     }
 
     void init_camera()
@@ -70,12 +91,19 @@ private:
             cap_.set(cv::CAP_PROP_FRAME_WIDTH, width_);
             cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height_);
             cap_.set(cv::CAP_PROP_FPS, fps_);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "KAMERA BULUNAMADI: %s", device_path_.c_str());
         }
     }
 
     void timer_callback()
     {
-        if (!cap_.isOpened()) { init_camera(); return; }
+        if (!cap_.isOpened()) {
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "KAMERA BULUNAMADI");
+            init_camera();
+            return;
+        }
+
         cap_ >> frame_;
         if (frame_.empty()) return;
 
@@ -83,27 +111,18 @@ private:
         header.stamp = this->now();
         header.frame_id = frame_id_;
 
-        // --- GPS SAATİNİ YAZDIRMA ---
         char buffer[100];
         
-        if (gps_locked_) {
-            // Format: HH:MM:SS.mmm
-            // %02d: 2 hane, boşsa 0 koy. %03d: 3 hane milisaniye
-            sprintf(buffer, "UTC: %02d:%02d:%02d.%03d", 
-                time_struct_.tm_hour, 
-                time_struct_.tm_min, 
-                time_struct_.tm_sec,
-                millis_);
+        if (data_received_) {
+            sprintf(buffer, "%02d:%02d:%02d.%03d", 
+                hours_, minutes_, seconds_, millis_);
         } else {
-            sprintf(buffer, "GPS Time: Waiting...");
+            sprintf(buffer, "--:--:--.---");
         }
 
         std::string time_text(buffer);
-
-        // Kamikaze Modu Rengi
-        cv::Scalar text_color = kamikaze_mode_ ? cv::Scalar(255) : cv::Scalar(0, 255, 0); // Beyaz veya Yeşil
+        cv::Scalar text_color = kamikaze_mode_ ? cv::Scalar(255) : cv::Scalar(0, 255, 0);
         
-        // Ekrana Yaz (Biraz daha büyük fontla)
         cv::putText(frame_, time_text, cv::Point(20, 50), cv::FONT_HERSHEY_SIMPLEX, 1.0, text_color, 2);
 
         sensor_msgs::msg::Image::SharedPtr msg;
@@ -131,10 +150,8 @@ private:
     std::string frame_id_;
     bool kamikaze_mode_ = false;
 
-    // Zaman Değişkenleri
-    struct tm time_struct_;
-    int millis_ = 0;
-    bool gps_locked_ = false;
+    int hours_ = 0, minutes_ = 0, seconds_ = 0, millis_ = 0;
+    bool data_received_ = false;
 };
 
 int main(int argc, char * argv[])
